@@ -35,6 +35,9 @@ struct AlbumListView: View {
     @EnvironmentObject var viewModel: PhotoViewModel
     @Environment(\.presentationMode) var presentationMode
 
+    // MARK: - 変更点
+    // 年単位セクションの開閉状態を追加
+    @State private var isYearSectionExpanded = false
     @State private var isMonthSectionExpanded = false
     @State private var isSmartAlbumSectionExpanded = false
     @State private var isMyAlbumSectionExpanded = false
@@ -42,6 +45,15 @@ struct AlbumListView: View {
     private let monthFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy年M月"
+        formatter.locale = Locale(identifier: "ja_JP")
+        return formatter
+    }()
+    
+    // MARK: - 変更点
+    // 年のフォーマッターを追加
+    private let yearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy年"
         formatter.locale = Locale(identifier: "ja_JP")
         return formatter
     }()
@@ -60,6 +72,26 @@ struct AlbumListView: View {
                     .onTapGesture {
                         viewModel.selection = .allPhotos
                         presentationMode.wrappedValue.dismiss()
+                    }
+                }
+                
+                // MARK: - 変更点
+                // 年単位のセクションを追加
+                CollapsibleSection(title: "年別で整理", isExpanded: $isYearSectionExpanded) {
+                    ForEach(viewModel.sortedYears, id: \.self) { year in
+                        HStack {
+                            Text(yearFormatter.string(from: year))
+                            Spacer()
+                            if let count = viewModel.yearlyGroupedAssets[year]?.count {
+                                Text("\(count)")
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            viewModel.selection = .year(year)
+                            presentationMode.wrappedValue.dismiss()
+                        }
                     }
                 }
 

@@ -11,10 +11,13 @@ enum SwipeAction {
     case delete, keep, pending
 }
 
+// MARK: - 変更点
+// 年単位の絞り込みを追加
 enum SelectionType {
     case allPhotos
     case album(PHAssetCollection)
     case month(Date)
+    case year(Date)
 }
 
 @MainActor
@@ -22,7 +25,6 @@ class PhotoViewModel: ObservableObject {
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published var filteredPhotoAssets: [PHAsset] = []
     
-    // ✅ didSetを追加して、配列が変更されるたびに保存処理を呼ぶ
     @Published var deletedPhotos: [PHAsset] = [] {
         didSet {
             saveDeletedPhotos()
@@ -45,13 +47,17 @@ class PhotoViewModel: ObservableObject {
     
     @Published var monthlyGroupedAssets: [Date: [PHAsset]] = [:]
     @Published var sortedMonths: [Date] = []
+    
+    // MARK: - 変更点
+    // 年単位のデータを保持するプロパティを追加
+    @Published var yearlyGroupedAssets: [Date: [PHAsset]] = [:]
+    @Published var sortedYears: [Date] = []
 
     private var allPhotoAssets: [PHAsset] = []
     private var keptPhotoIdentifiers: Set<String> = []
     private var history: [(action: SwipeAction, asset: PHAsset)] = []
     private let photoManager = PhotoManager()
     
-    // ✅ UserDefaultsのキーを追加
     private let keptPhotosKey = "keptPhotoIdentifiers"
     private let deletedPhotosKey = "deletedPhotoIdentifiers"
     private let pendingPhotosKey = "pendingPhotoIdentifiers"
@@ -70,12 +76,18 @@ class PhotoViewModel: ObservableObject {
             formatter.dateFormat = "yyyy年M月"
             formatter.locale = Locale(identifier: "ja_JP")
             return formatter.string(from: date)
+        // MARK: - 変更点
+        // 年単位のタイトル表示を追加
+        case .year(let date):
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy年"
+            formatter.locale = Locale(identifier: "ja_JP")
+            return formatter.string(from: date)
         }
     }
 
     init() {
         self.authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        // ✅ 最初に全ての状態を読み込む
         loadKeptPhotos()
         loadDeletedPhotos()
         loadPendingPhotos()
@@ -98,7 +110,11 @@ class PhotoViewModel: ObservableObject {
 
     func loadInitialData() {
         loadAlbums()
-        groupPhotosByMonth()
+        // MARK: - 変更点
+        // 年単位のグルーピング処理を追加
+        let allPhotos = photoManager.fetchPhotos(from: nil)
+        groupPhotosByMonth(allPhotos: allPhotos)
+        groupPhotosByYear(allPhotos: allPhotos)
         loadPhotosForSelection()
     }
 
@@ -106,8 +122,9 @@ class PhotoViewModel: ObservableObject {
         self.albums = photoManager.fetchAlbums()
     }
     
-    func groupPhotosByMonth() {
-        let allPhotos = photoManager.fetchPhotos(from: nil)
+    // MARK: - 変更点
+    // 全写真アセットを引数で受け取るように変更
+    func groupPhotosByMonth(allPhotos: [PHAsset]) {
         let grouped = Dictionary(grouping: allPhotos) { asset -> Date in
             let calendar = Calendar.current
             let components = calendar.dateComponents([.year, .month], from: asset.creationDate ?? Date())
@@ -116,7 +133,19 @@ class PhotoViewModel: ObservableObject {
         self.monthlyGroupedAssets = grouped
         self.sortedMonths = grouped.keys.sorted(by: >)
     }
-    
+
+    // MARK: - 変更点
+    // 年単位で写真をグループ化するメソッドを追加
+    func groupPhotosByYear(allPhotos: [PHAsset]) {
+        let grouped = Dictionary(grouping: allPhotos) { asset -> Date in
+            let calendar = Calendar.current
+            let components = calendar.dateComponents([.year], from: asset.creationDate ?? Date())
+            return calendar.date(from: components) ?? Date()
+        }
+        self.yearlyGroupedAssets = grouped
+        self.sortedYears = grouped.keys.sorted(by: >)
+    }
+
     func loadPhotosForSelection() {
         switch selection {
         case .allPhotos:
@@ -125,6 +154,10 @@ class PhotoViewModel: ObservableObject {
             allPhotoAssets = photoManager.fetchPhotos(from: collection)
         case .month(let date):
             allPhotoAssets = monthlyGroupedAssets[date] ?? []
+        // MARK: - 変更点
+        // 年単位のデータソースを指定
+        case .year(let date):
+            allPhotoAssets = yearlyGroupedAssets[date] ?? []
         }
         filterPhotos()
         resetSwipeState()
@@ -193,7 +226,6 @@ class PhotoViewModel: ObservableObject {
         }
     }
     
-    // ✅ 新しい保存・読み込みメソッド
     private func saveDeletedPhotos() {
         let identifiers = deletedPhotos.map { $0.localIdentifier }
         UserDefaults.standard.set(identifiers, forKey: deletedPhotosKey)
@@ -231,7 +263,6 @@ class PhotoViewModel: ObservableObject {
         resetSwipeState()
     }
     
-    // (以降のメソッドは変更なし)
     func confirmDelete(assetsToDelete: [PHAsset], completion: @escaping (Bool) -> Void) {
         photoManager.deletePhotos(assets: assetsToDelete) { [weak self] success in
             if success {
