@@ -1,7 +1,7 @@
 import SwiftUI
 import Photos
 import AVKit
-import PhotosUI // MARK: - 変更点 (PhotosUIをインポート)
+import PhotosUI
 
 struct PhotoDetailContent: View {
     let asset: PHAsset
@@ -9,6 +9,9 @@ struct PhotoDetailContent: View {
     @State private var image: UIImage? = nil
     @State private var playerItem: AVPlayerItem? = nil
     @State private var livePhoto: PHLivePhoto? = nil
+    
+    // ✅ 動画スライダー操作の状態を管理する変数を追加
+    @State private var isSliderEditing = false
     
     private let photoManager = PhotoManager()
 
@@ -18,8 +21,6 @@ struct PhotoDetailContent: View {
             case .image:
                 if asset.mediaSubtypes.contains(.photoLive) {
                     if let livePhoto = livePhoto {
-                        // MARK: - 変更点
-                        // LivePhotoDetailView から LivePhotoView に名称を統一
                         LivePhotoView(livePhoto: livePhoto)
                     } else {
                         ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white))
@@ -35,7 +36,8 @@ struct PhotoDetailContent: View {
                 }
             case .video:
                 if let playerItem = playerItem {
-                    VideoPlayerView(playerItem: playerItem)
+                    // ✅ isForegroundとisSliderEditingの引数を渡すように修正
+                    VideoPlayerView(playerItem: playerItem, isForeground: true, isSliderEditing: $isSliderEditing)
                 } else {
                     ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white))
                 }

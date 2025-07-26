@@ -2,7 +2,7 @@ import SwiftUI
 import Photos
 import AVKit
 import PhotosUI
-import Combine // MARK: - 新規追加
+import Combine
 
 struct PhotoSwipeView: View {
     @EnvironmentObject var viewModel: PhotoViewModel
@@ -10,6 +10,11 @@ struct PhotoSwipeView: View {
     @State private var cardOffset: CGSize = .zero
     @State private var showAlbumList = false
     @State private var showResetAlert = false
+    @State private var isSliderEditing = false
+
+    private var isCardInteractive: Bool {
+        !isSliderEditing
+    }
 
     var body: some View {
         NavigationView {
@@ -66,7 +71,7 @@ struct PhotoSwipeView: View {
     private var swipeArea: some View {
         ZStack {
             if viewModel.currentIndex + 1 < viewModel.filteredPhotoAssets.count {
-                PhotoCardView(asset: viewModel.filteredPhotoAssets[viewModel.currentIndex + 1])
+                PhotoCardView(asset: viewModel.filteredPhotoAssets[viewModel.currentIndex + 1], isForeground: false, isSliderEditing: .constant(false))
                     .scaleEffect(0.95)
                     .offset(y: -20)
                     .id("background_\(viewModel.filteredPhotoAssets[viewModel.currentIndex + 1].localIdentifier)")
@@ -81,14 +86,16 @@ struct PhotoSwipeView: View {
             }
             
             if viewModel.currentIndex < viewModel.filteredPhotoAssets.count {
-                PhotoCardView(asset: viewModel.filteredPhotoAssets[viewModel.currentIndex])
+                PhotoCardView(asset: viewModel.filteredPhotoAssets[viewModel.currentIndex], isForeground: true, isSliderEditing: $isSliderEditing)
                     .offset(cardOffset)
                     .rotationEffect(.degrees(Double(cardOffset.width / 25)))
                     .id("foreground_\(viewModel.filteredPhotoAssets[viewModel.currentIndex].localIdentifier)")
                     .gesture(
+                        isCardInteractive ?
                         DragGesture()
                             .onChanged { gesture in self.cardOffset = gesture.translation }
                             .onEnded { gesture in handleSwipe(translation: gesture.translation) }
+                        : nil
                     )
             } else {
                 VStack {
@@ -142,6 +149,9 @@ struct PhotoSwipeView: View {
 
 struct PhotoCardView: View {
     let asset: PHAsset
+    let isForeground: Bool
+    @Binding var isSliderEditing: Bool
+    
     private let photoManager = PhotoManager()
     
     @State private var image: UIImage? = nil
@@ -171,7 +181,7 @@ struct PhotoCardView: View {
                 }
             case .video:
                 if let playerItem = playerItem {
-                    VideoPlayerView(playerItem: playerItem)
+                    VideoPlayerView(playerItem: playerItem, isForeground: isForeground, isSliderEditing: $isSliderEditing)
                 } else {
                     ProgressView()
                 }
@@ -210,13 +220,14 @@ struct PhotoCardView: View {
     }
 }
 
-// MARK: - 変更点
-// AVPlayerの状態を管理するObservableObjectを作成
 class PlayerViewModel: ObservableObject {
     let player: AVPlayer
     @Published var isPlaying: Bool = false
     @Published var currentTime: Double = 0
     @Published var totalTime: Double = 0
+    
+    // ✅ 再生速度を管理するプロパティを追加
+    @Published var playbackRate: Float = 1.0
     
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
@@ -233,27 +244,25 @@ class PlayerViewModel: ObservableObject {
     }
     
     private func setupObservers() {
-        // 再生状態の監視
         player.publisher(for: \.timeControlStatus)
             .map { $0 == .playing }
             .assign(to: \.isPlaying, on: self)
             .store(in: &cancellables)
 
-        // 再生時間の監視
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] time in
             self?.currentTime = time.seconds
         }
         
-        // 総再生時間の取得
         if let duration = player.currentItem?.duration, duration.isNumeric {
             totalTime = duration.seconds
         }
         
-        // ループ再生の設定
         NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime, object: player.currentItem)
             .sink { [weak self] _ in
                 self?.player.seek(to: .zero)
                 self?.player.play()
+                // ✅ ループ再生時も設定された速度を維持
+                self?.player.rate = self?.playbackRate ?? 1.0
             }
             .store(in: &cancellables)
     }
@@ -262,7 +271,17 @@ class PlayerViewModel: ObservableObject {
         if isPlaying {
             player.pause()
         } else {
+            // ✅ 設定された再生速度で再生
             player.play()
+            player.rate = playbackRate
+        }
+    }
+    
+    // ✅ 再生速度を切り替えるメソッド
+    func toggleSpeed() {
+        playbackRate = (playbackRate == 1.0) ? 2.0 : 1.0
+        if isPlaying {
+            player.rate = playbackRate
         }
     }
     
@@ -272,29 +291,28 @@ class PlayerViewModel: ObservableObject {
 }
 
 struct VideoPlayerView: View {
-    // MARK: - 変更点
-    // StateObjectとしてPlayerViewModelを保持
     @StateObject private var playerViewModel: PlayerViewModel
     
-    @State private var showControls: Bool = true
-    @State private var longPressActive: Bool = false
+    let isForeground: Bool
+    @Binding var isSliderEditing: Bool
     
-    init(playerItem: AVPlayerItem) {
-        // StateObjectを初期化
+    @State private var showControls: Bool = true
+    
+    init(playerItem: AVPlayerItem, isForeground: Bool, isSliderEditing: Binding<Bool>) {
         _playerViewModel = StateObject(wrappedValue: PlayerViewModel(playerItem: playerItem))
+        self.isForeground = isForeground
+        self._isSliderEditing = isSliderEditing
     }
 
     var body: some View {
         ZStack {
             CustomVideoPlayer(player: playerViewModel.player)
-                .onAppear { playerViewModel.player.play() }
+                .onAppear { if isForeground { playerViewModel.togglePlayPause() } }
                 .onDisappear { playerViewModel.player.pause() }
 
             VStack {
                 Spacer()
-                // MARK: - 変更点
-                // ViewModelを渡すように変更
-                VideoControlsView(playerViewModel: playerViewModel)
+                VideoControlsView(playerViewModel: playerViewModel, isSliderEditing: $isSliderEditing)
                     .padding(.bottom, 20)
                     .opacity(showControls ? 1 : 0)
                     .animation(.easeInOut, value: showControls)
@@ -304,24 +322,11 @@ struct VideoPlayerView: View {
             withAnimation { showControls.toggle() }
             if showControls { startControlsTimer() }
         }
-        .gesture(
-            LongPressGesture(minimumDuration: 0.2)
-                .onChanged { pressing in
-                    longPressActive = pressing
-                    playerViewModel.player.rate = pressing ? 2.5 : (playerViewModel.isPlaying ? 1.0 : 0.0)
-                }
-                .onEnded { _ in
-                    longPressActive = false
-                    playerViewModel.player.rate = playerViewModel.isPlaying ? 1.0 : 0.0
-                }
-        )
     }
     
     private func startControlsTimer() {
         Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
-            if !longPressActive {
-                withAnimation { showControls = false }
-            }
+            withAnimation { showControls = false }
         }
     }
 }
@@ -343,37 +348,58 @@ struct CustomVideoPlayer: UIViewControllerRepresentable {
 }
 
 struct VideoControlsView: View {
-    // MARK: - 変更点
-    // ViewModelをObservedObjectとして受け取る
     @ObservedObject var playerViewModel: PlayerViewModel
+    @Binding var isSliderEditing: Bool
     
     var body: some View {
         VStack {
+            // --- 再生時間スライダー ---
             HStack {
                 Text(formatTime(playerViewModel.currentTime))
                     .font(.caption.monospacedDigit())
                     .foregroundColor(.white)
-                // MARK: - 変更点
-                // ViewModelのプロパティと直接バインディング
+                
                 Slider(value: $playerViewModel.currentTime, in: 0...playerViewModel.totalTime, onEditingChanged: { editing in
+                    isSliderEditing = editing
                     if !editing {
                         playerViewModel.seek(to: playerViewModel.currentTime)
                     }
                 })
+                
                 Text(formatTime(playerViewModel.totalTime))
                     .font(.caption.monospacedDigit())
                     .foregroundColor(.white)
             }
             .padding(.horizontal)
             
-            Button(action: {
-                playerViewModel.togglePlayPause()
-            }) {
-                Image(systemName: playerViewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.largeTitle)
-                    .foregroundColor(.white)
+            // --- 操作ボタン ---
+            HStack(spacing: 40) {
+                // ✅ 再生速度変更ボタン
+                Button(action: {
+                    playerViewModel.toggleSpeed()
+                }) {
+                    Text("\(String(format: "%.1f", playerViewModel.playbackRate))x")
+                        .font(.body)
+                        .foregroundColor(.white)
+                        .frame(width: 60, height: 44)
+                        .background(Color.white.opacity(0.2))
+                        .clipShape(Capsule())
+                }
+
+                // 再生・一時停止ボタン
+                Button(action: {
+                    playerViewModel.togglePlayPause()
+                }) {
+                    Image(systemName: playerViewModel.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.largeTitle)
+                        .foregroundColor(.white)
+                }
+                
+                // ボタンのバランスを取るためのダミースペース
+                Spacer().frame(width: 60)
             }
         }
+        .padding(.horizontal)
     }
     
     private func formatTime(_ time: Double) -> String {
